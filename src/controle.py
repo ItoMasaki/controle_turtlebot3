@@ -11,10 +11,7 @@ class Controle(Node):
 
         self.twist = Twist()
 
-        l = input("Linear  : ")
-        a = input("Angular : ")
-
-        self.run(l, a)
+        self.run(0.01, 0.05)
 
     def run(self, l, a):
         self.twist.linear.x = float(l)
