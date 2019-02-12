@@ -1,73 +1,162 @@
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import Twist
-from nav_msgs.msg import Odometry
+from geometry_msgs.msg import Twist, Vector3, Quaternion, Point
 from sensor_msgs.msg import LaserScan
+from nav_msgs.msg import Odometry
 
-from numpy import arange, array, pi, float32, cos, sin, inf
+from tf import Quaternion2Euler
 
-from PyQt5.QtWidgets import QWidget, QApplication
-from PyQt5.QtGui import QPainter, QPen, QColor
-from PyQt5.QtCore import Qt
+import sys
+
+from time import sleep
+
+import numpy
+from numpy import arange, array, pi, float32, inf, float64
+from numpy import cos, sin, arctan2, rad2deg, deg2rad
+from numpy import sqrt, round
+
+from matplotlib import pyplot as plt
 
 
-class SLAM(QWidget):
+# 現在位置からの物体距離を計算
+class make_map(Node):
+
     def __init__(self):
-        super().__init__(self)
+        super(make_map, self).__init__("turtlebot3")
 
-        #self.
+        # 型の初期化
+        self.position        = Point()
+        self.orientation     = Quaternion()
+        self.range           = array(0)
+        self.angle           = array(0)
+        self.range_max       = array(0)
 
-        self.init_UI()
+        self.x               = float(0.0)
+        self.y               = float(0.0)
 
-    def init_UI(self):
-        self.setGeometry(300, 300, 280, 170)
+        self.range_min       = float(0)
+        self.range_min_num   = float(0)
+        self.angle_min       = float(0)
+        self.angle_increment = float(0)
 
-
-class get_odom(Node):
-    def __init__(self):
-        super().__init__("turtlebot3")
-
+        # 読み込みノード作成
         self.create_subscription(LaserScan, "/scan", self.LaserScan_callback)
+        self.create_subscription(Odometry, "/odom", self.Odometry_callback)
+        self.create_timer(0.2, self.PositionCalc)
 
+        self.vel_pub_node = self.create_publisher(Twist, "/cmd_vel")
 
     def LaserScan_callback(self, data):
+        self.angle_increment = data.angle_increment
+        self.angle           = arange(90*self.angle_increment, 450*self.angle_increment, self.angle_increment, dtype=float32)
+        self.range           = array(data.ranges)
+        self.range_min       = self.range.min()
+        self.range_min_num   = self.range.argmin()
 
-        self.angle = arange(0, 360*data.angle_increment, data.angle_increment, dtype=float32)
-        self.range = array(data.ranges)
+    def Odometry_callback(self, data):
+        self.position.x      = -data.pose.pose.position.y
+        self.position.y      = data.pose.pose.position.x
+        self.orientation     = data.pose.pose.orientation
 
-        self.range_max = data.range_max
+    def PositionCalc(self):
+        self.euler = Quaternion2Euler(self.orientation)
 
-        self.odom_base_map()
+        self.x     = self.range*cos(self.angle - self.euler.z) + self.position.x
+        self.y     = self.range*sin(self.angle - self.euler.z) + self.position.y
 
-    def odom_base_map(self):
-        self.x = self.range*cos(self.angle)
-        self.y = self.range*sin(self.angle)
+        self.x     = round(self.x, 3)
+        self.y     = round(self.y, 3)
 
-        self.x[self.x == -inf] = self.range_max
-        self.x[self.x == inf] = self.range_max
+        self.SearchMin()
+        self.Controle()
 
-        self.y[self.y == -inf] = self.range_max
-        self.y[self.y == inf] = self.range_max
+        #self.testControle()
 
-        print(self.x)
+        try:
+            self.Plot(False)
+        except:
+            sys.exit()
+
+
+    def SearchMin(self):
+        self.angle_min = self.range_min_num * self.angle_increment - self.euler.z
+
+        if self.angle_min < 0:
+            self.angle_min += 2*pi
+
+        if self.angle_min > 2*pi:
+            self.angle_min -= 2*pi
+
+        print("BODY:{0}".format(round(rad2deg(self.euler.z), 3)))
+
+    def testControle(self):
+        vel = Twist()
+
+        vel.linear.x = 0.20
+
+        stop = False
+
+        if self.range_min < 0.20:
+            stop = True
+            vel.linear.x = 0.0
+            vel.angular.z = 0.1
+
+        self.vel_pub_node.publish(vel)
+
+    def Controle(self):
+        vel = Twist()
+
+        angle = rad2deg(self.angle_min)
+        body  = rad2deg(self.euler.z)
+
+        if body < -90 or 90 < body:
+
+            vel.linear.x = 0.1
+
+            if 45 < angle and angle < 135 and self.range_min < 0.40:
+                vel.angular.z = -0.20
+
+            elif angle > 225 and angle < 315 and self.range_min < 0.40:
+                vel.angular.z = 0.20
+
+            else:
+                pass
+
+        elif -90 < body and body < 90:
+
+            vel.linear.x = 0.1
+
+            if 0 < angle and angle < 180:
+                vel.angular.z = -0.20
+
+            elif angle > 180 and angle < 360:
+                vel.angular.z = 0.20
+            else:
+                pass
+        else:
+            pass
+
+        if self.range_min < 0.15:
+            vel.linear.x = -0.25
+
+        self.vel_pub_node.publish(vel)
+
+    def Plot(self, cla=True):
+        if cla:
+            plt.cla()
+        plt.xlim(-3, 3)
+        plt.ylim(-3, 3)
+        plt.scatter(self.x, self.y, s=0.5, color="blue")
+        plt.scatter(self.position.x, self.position.y, s=1, color="black")
+        #plt.quiver(self.position.x, self.position.y, cos(self.angle_min + deg2rad(90)), sin(self.angle_min + deg2rad(90)))
+        #plt.quiver(self.position.x, self.position.y, cos(self.euler.z + deg2rad(90)), sin(self.euler.z + deg2rad(90)))
+        plt.pause(0.1)
 
 
 def main():
     rclpy.init()
-
-    node = get_odom()
-
+    node = make_map()
     rclpy.spin(node)
-
-    node.destroy_node()
-    #try:
-    #    print("worked!")
-    #    rclpy.spin(node)
-    #except:
-    #    node.destroy_node()
-
-    rclpy.shutdown()
-
 
 if __name__ == "__main__":
     main()
